@@ -6,28 +6,7 @@ import lightgbm as lgb
 from sklearn import metrics
 from sklearn.model_selection import train_test_split
 from time import gmtime, strftime
-import gc, json, argparse
-
-DEFAULT_PARAMS = {'boosting_type': 'gbdt',
-              'max_depth' : 7,
-              'objective': 'binary',
-              'num_leaves': 64,
-              'learning_rate': 0.05,
-              'max_bin': 63,
-              'subsample_for_bin': 200,
-              'subsample': 1,
-              'subsample_freq': 1,
-              'colsample_bytree': 0.7,
-              'reg_alpha': 5,
-              'reg_lambda': 3,
-              'min_split_gain': 0.5,
-              'min_child_weight': 1,
-              'min_child_samples': 5,
-              'scale_pos_weight': 1,
-              'num_class' : 1,
-              # 'device': 'gpu',
-              'metric' : 'auc'
-              }
+import gc, json
 
 def obj_to_cat(df):
     '''
@@ -85,7 +64,7 @@ def merge_dfs(leftdf, rightdfs):
         leftdf = leftdf.merge(right=rightdf.reset_index(), how='left', on='SK_ID_CURR')
     return leftdf
 
-def main(params):
+def main():
     # Read datasets
     print('Reading datasets')
     datapath = 'dataset/'
@@ -128,54 +107,89 @@ def main(params):
     # Split the data into train data and validation data
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Build Dataset for lightgbm
-    train_data = lgb.Dataset(X_train, label=y_train, 
+    # Grid search
+    print('Start searching the optimal parameters')
+    for depth in [-1, 3, 5]:
+      for nleaves in [20, 40, 60]:
+          for colsample in [0.7, 0.75, 0.8]:
+              for min_split in [0.5, 0.7]:
+                  print('max_depth: {0:}, num_leaves: {1:}, col_sample: {2:}, min_split: {3:}'\
+                        .format(depth, nleaves, colsample, min_split))
+                  params = {'boosting_type': 'gbdt',
+                            'max_depth' : depth,
+                            'objective': 'binary',
+                            'num_leaves': nleaves,
+                            'learning_rate': 0.05,
+                            'max_bin': 63,
+                            'subsample': 1,
+                            'subsample_freq': 1,
+                            'colsample_bytree': colsample,
+                            'reg_alpha': 5,
+                            'reg_lambda': 3,
+                            'min_split_gain': min_split,
+                            'min_child_weight': 1,
+                            'min_child_samples': 5,
+                            'scale_pos_weight': 1,
+                            'num_class' : 1,
+                            'device': 'gpu',
+                            'metric' : 'auc'
+                            }
+
+                  train_data = lgb.Dataset(X_train, label=y_train, 
+                                   categorical_feature=cat_features)
+                  valid_data = lgb.Dataset(X_val, label=y_val, 
+                                   categorical_feature=cat_features)
+
+                  lgbm = lgb.train(params,
+                                   train_data,
+                                   2500,
+                                   valid_sets=valid_data,
+                                   early_stopping_rounds= 40,
+                                   verbose_eval= False
+                                   )
+
+                  if lgbm.best_score['valid_0']['auc'] > best_auc:
+                      best_auc = lgbm.best_score['valid_0']['auc']
+                      best_lgb = lgbm
+                      best_params = params
+
+    # best_params = params
+    print('Tuning regularization parameters')
+    for r_alpha in [1, 3, 5]:
+        for r_lambda in [1, 2, 3]:
+            print('reg_alpha: {0:}, reg_lambda: {1:}'.format(r_alpha, r_lambda))
+            params = best_params
+            params['reg_alpha'] = r_alpha
+            params['reg_lambda'] = r_lambda
+            
+            train_data = lgb.Dataset(X_train, label=y_train, 
                              categorical_feature=cat_features)
-    valid_data = lgb.Dataset(X_val, label=y_val, 
+            valid_data = lgb.Dataset(X_val, label=y_val, 
                              categorical_feature=cat_features)
 
-    # # Set parameters
-    # params = {'boosting_type': 'gbdt',
-    #           'max_depth' : 7,
-    #           'objective': 'binary',
-    #           'nthread': 5,
-    #           'num_leaves': 64,
-    #           'learning_rate': 0.05,
-    #           'max_bin': 512,
-    #           'subsample_for_bin': 200,
-    #           'subsample': 1,
-    #           'subsample_freq': 1,
-    #           'colsample_bytree': 0.7,
-    #           'reg_alpha': 5,
-    #           'reg_lambda': 3,
-    #           'min_split_gain': 0.5,
-    #           'min_child_weight': 1,
-    #           'min_child_samples': 5,
-    #           'scale_pos_weight': 1,
-    #           'num_class' : 1,
-    #           'metric' : 'auc'
-    #           }
+            lgbm = lgb.train(params,
+                             train_data,
+                             2500,
+                             valid_sets=valid_data,
+                             early_stopping_rounds= 40,
+                             verbose_eval= False
+                             )
 
-    # Train
-    print('Started Training')
-    lgbm = lgb.train(params,
-                     train_data,
-                     2500,
-                     valid_sets=valid_data,
-                     early_stopping_rounds= 40,
-                     verbose_eval= 20
-                     )
+            if lgbm.best_score['valid_0']['auc'] > best_auc:
+                best_auc = lgbm.best_score['valid_0']['auc']
+                best_lgb = lgbm
+                best_params = params
+
+    # Save the parameters in 'params.json'
+    with open('params.json', 'w') as fp:
+        json.dump(best_params, fp)
 
     # Create the submission data
-    y_pred = lgbm.predict(testdf)
+    print('Creating a submission file')
+    y_pred = best_lgb.predict(testdf)
     submissiondf = pd.DataFrame({'SK_ID_CURR': testdf['SK_ID_CURR'], 'TARGET': y_pred})
     t = strftime("%Y-%m-%d %H:%M:%S", gmtime())
     submissiondf.to_csv('submission' + t + '.csv', index=False)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--params', type=float, dest='params',
-                        default=DEFAULT_PARAMS,
-                        help='Set parameters from json file')
-    args = parser.parse_args()
-    main(args.params)
+    main()
