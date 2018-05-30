@@ -108,6 +108,7 @@ def main():
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
     # Grid search
+    best_auc = 0.0
     print('Start searching the optimal parameters')
     for depth in [-1, 3, 5]:
       for nleaves in [20, 40, 60]:
