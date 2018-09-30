@@ -153,11 +153,11 @@ def train_model(X_train, y_train, X_test, params, print_every=100):
         oof_preds[val_idx] = clf.predict_proba(val_x, num_iteration=clf.best_iteration_)[:, 1]
         sub_preds += clf.predict_proba(X_test[feats], num_iteration=clf.best_iteration_)[:, 1] / folds.n_splits
 
-        fold_importance_df = pd.DataFrame()
-        fold_importance_df["feature"] = feats
-        fold_importance_df["importance"] = clf.feature_importances_
-        fold_importance_df["fold"] = n_fold + 1
-        feature_importance_df = pd.concat([feature_importance_df, fold_importance_df], axis=0)
+        # fold_importance_df = pd.DataFrame()
+        # fold_importance_df["feature"] = feats
+        # fold_importance_df["importance"] = clf.feature_importances_
+        # fold_importance_df["fold"] = n_fold + 1
+        # feature_importance_df = pd.concat([feature_importance_df, fold_importance_df], axis=0)
 
         print('Fold %2d AUC : %.6f' % (n_fold + 1, roc_auc_score(val_y, oof_preds[val_idx])))
         del clf, trn_x, trn_y, val_x, val_y
