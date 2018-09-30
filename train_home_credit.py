@@ -1,5 +1,3 @@
-# Many thanks to Georgios Sarantitis (https://www.kaggle.com/georsara1/lightgbm-all-tables-included-0-778)
-
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
