@@ -3,28 +3,32 @@
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
+from lightgbm import LGBMClassifier
+
 from sklearn import metrics
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold, StratifiedKFold
 from time import gmtime, strftime
 import gc, json, argparse
 
+# Default parameters chosen by using Bayesian Obtimization
 DEFAULT_PARAMS = {'boosting_type': 'gbdt',
-              'max_depth' : 7,
+              'n_jobs' : 8,
+              'n_estimators' : 10000,
+              'max_depth' : 8,
               'objective': 'binary',
-              'num_leaves': 64,
-              'learning_rate': 0.05,
+              'num_leaves': 34,
+              'learning_rate': 0.02,
               'max_bin': 63,
-              'subsample_for_bin': 200,
-              'subsample': 1,
+              'subsample': 0.8715623,
               'subsample_freq': 1,
-              'colsample_bytree': 0.7,
-              'reg_alpha': 5,
-              'reg_lambda': 3,
-              'min_split_gain': 0.5,
-              'min_child_weight': 1,
-              'min_child_samples': 5,
-              'scale_pos_weight': 1,
+              'colsample_bytree': 0.9497036,
+              'reg_alpha': 0.041545473,
+              'reg_lambda': 0.0735294,
+              'min_split_gain': 0.0222415,
+              'min_child_weight': 60,
               'num_class' : 1,
+              'silent' : -1,
+              'verbose' : -1,
               # 'device': 'gpu',
               'metric' : 'auc'
               }
@@ -85,10 +89,105 @@ def merge_dfs(leftdf, rightdfs):
         leftdf = leftdf.merge(right=rightdf.reset_index(), how='left', on='SK_ID_CURR')
     return leftdf
 
+def create_feats(df):
+    df['DAYS_EMPLOYED'].replace(365243, np.nan, inplace= True)
+    
+    # Create new features
+    df['DAYS_EMPLOYED_PERC'] = df['DAYS_EMPLOYED'] / df['DAYS_BIRTH']
+    df['INCOME_CREDIT_PERC'] = df['AMT_INCOME_TOTAL'] / df['AMT_CREDIT']
+    df['INCOME_PER_PERSON'] = df['AMT_INCOME_TOTAL'] / df['CNT_FAM_MEMBERS']
+    df['ANNUITY_INCOME_PERC'] = df['AMT_ANNUITY'] / df['AMT_INCOME_TOTAL']
+
+    return df
+
+def train_model(X_train, y_train, X_test, params, print_every=100):
+    folds = KFold(n_splits=5, shuffle=True, random_state=42)
+    oof_preds = np.zeros(X_train.shape[0])
+    sub_preds = np.zeros(X_test.shape[0])
+
+    feature_importance_df = pd.DataFrame()
+
+    feats = [f for f in X_train.columns if f not in ['SK_ID_CURR']]
+    
+    # set parameters
+    n_jobs = params['n_jobs']
+    n_estimators = params['n_estimators']
+    learning_rate = params['learning_rate']
+    num_leaves = params['num_leaves']
+    colsample_bytree = params['colsample_bytree']
+    subsample = params['subsample']
+    max_depth = params['max_depth']
+    reg_alpha = params['reg_alpha']
+    reg_lambda = params['reg_lambda']
+    min_split_gain = params['min_split_gain']
+    min_child_weight = params['min_child_weight']
+    silent = params['silent']
+    verbose = params['verbose']
+    metric = params['metric']
+    
+    for n_fold, (trn_idx, val_idx) in enumerate(folds.split(X_train)):
+        trn_x, trn_y = X_train[feats].iloc[trn_idx], y_train.iloc[trn_idx]
+        val_x, val_y = X_train[feats].iloc[val_idx], y_train.iloc[val_idx]
+
+        clf = LGBMClassifier(
+            n_jobs=n_jobs,
+            n_estimators=n_estimators,
+            learning_rate=learning_rate,
+            num_leaves=num_leaves,
+            colsample_bytree=colsample_bytree,
+            subsample=subsample,
+            max_depth=max_depth,
+            reg_alpha=reg_alpha,
+            reg_lambda=reg_lambda,
+            min_split_gain=min_split_gain,
+            min_child_weight=min_child_weight,
+            silent=silent,
+            metric=metric,
+            verbose=verbose)
+
+        clf.fit(trn_x, trn_y, 
+                eval_set= [(trn_x, trn_y), (val_x, val_y)], 
+                eval_metric='auc', verbose=print_every, early_stopping_rounds=100
+               )
+
+        oof_preds[val_idx] = clf.predict_proba(val_x, num_iteration=clf.best_iteration_)[:, 1]
+        sub_preds += clf.predict_proba(X_test[feats], num_iteration=clf.best_iteration_)[:, 1] / folds.n_splits
+
+        fold_importance_df = pd.DataFrame()
+        fold_importance_df["feature"] = feats
+        fold_importance_df["importance"] = clf.feature_importances_
+        fold_importance_df["fold"] = n_fold + 1
+        feature_importance_df = pd.concat([feature_importance_df, fold_importance_df], axis=0)
+
+        print('Fold %2d AUC : %.6f' % (n_fold + 1, roc_auc_score(val_y, oof_preds[val_idx])))
+        del clf, trn_x, trn_y, val_x, val_y
+        gc.collect()
+
+    cv_score = roc_auc_score(y, oof_preds)
+    print('Full AUC score %.6f' % cv_score) 
+
+    # Plot feature importances
+#     cols = feature_importance_df[["feature", "importance"]].groupby("feature").mean().sort_values(
+#                     by="importance", ascending=False)[:50].index
+
+#     best_features = feature_importance_df.loc[feature_importance_df.feature.isin(cols)]
+#     plt.figure(figsize=(8,10))
+#     sns.barplot(x="importance", y="feature", data=best_features.sort_values(by="importance", ascending=False))
+#     plt.title('LightGBM Features (avg over folds)')
+#     plt.tight_layout()
+
+    X_test['TARGET'] = sub_preds
+    
+    return test, cv_score
+
+def save_params(params):
+    with open('best_param.json', 'w') as fp:
+        json.dump(params, fp)
+
 def main(params):
     # Read datasets
     print('Reading datasets')
-    datapath = 'dataset/'
+    datapath = 'input/'
     descriptions = pd.read_csv(datapath + 'HomeCredit_columns_description.csv', encoding='iso-8859-1')
     traindf = pd.read_csv(datapath + 'application_train.csv') 
     testdf = pd.read_csv(datapath + 'application_test.csv')
@@ -118,6 +217,10 @@ def main(params):
     traindf = merge_dfs(traindf, [bureau, pos, balance, prev_application, instpayments])
     testdf = merge_dfs(testdf, [bureau, pos, balance, prev_application, instpayments])
 
+    # Create new features 
+    traindf = create_feats(traindf)
+    testdf = create_feats(testdf)
+
     # Create train data and labels
     X = traindf.drop('TARGET', axis=1)
     y = traindf.TARGET
@@ -125,52 +228,14 @@ def main(params):
     del traindf, bureau, pos, balance, prev_application, instpayments
     gc.collect()
 
-    # Split the data into train data and validation data
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    # Build Dataset for lightgbm
-    train_data = lgb.Dataset(X_train, label=y_train, 
-                             categorical_feature=cat_features)
-    valid_data = lgb.Dataset(X_val, label=y_val, 
-                             categorical_feature=cat_features)
-
-    # # Set parameters
-    # params = {'boosting_type': 'gbdt',
-    #           'max_depth' : 7,
-    #           'objective': 'binary',
-    #           'nthread': 5,
-    #           'num_leaves': 64,
-    #           'learning_rate': 0.05,
-    #           'max_bin': 512,
-    #           'subsample_for_bin': 200,
-    #           'subsample': 1,
-    #           'subsample_freq': 1,
-    #           'colsample_bytree': 0.7,
-    #           'reg_alpha': 5,
-    #           'reg_lambda': 3,
-    #           'min_split_gain': 0.5,
-    #           'min_child_weight': 1,
-    #           'min_child_samples': 5,
-    #           'scale_pos_weight': 1,
-    #           'num_class' : 1,
-    #           'metric' : 'auc'
-    #           }
-
     # Train
     print('Started Training')
-    lgbm = lgb.train(params,
-                     train_data,
-                     2500,
-                     valid_sets=valid_data,
-                     early_stopping_rounds= 40,
-                     verbose_eval= 20
-                     )
+    test, score = train_model(X, y, testdf, params)
 
     # Create the submission data
-    y_pred = lgbm.predict(testdf)
-    submissiondf = pd.DataFrame({'SK_ID_CURR': testdf['SK_ID_CURR'], 'TARGET': y_pred})
     t = strftime("%Y-%m-%d %H:%M:%S", gmtime())
-    submissiondf.to_csv('submission' + t + '.csv', index=False)
+    test[['SK_ID_CURR', 'TARGET']].to_csv('submission' + t + '.csv', index=False)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
