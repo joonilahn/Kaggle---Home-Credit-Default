@@ -5,7 +5,7 @@ import numpy as np
 import lightgbm as lgb
 from lightgbm import LGBMClassifier
 
-from sklearn import metrics
+from sklearn.metrics import roc_auc_score, precision_recall_curve, roc_curve
 from sklearn.model_selection import train_test_split, KFold, StratifiedKFold
 from time import gmtime, strftime
 import gc, json, argparse
